@@ -58,9 +58,19 @@ struct VerticeEscena {
     glm::vec3 normal;
     glm::vec2 uv;
 };
+struct VerticePiel {
+    glm::ivec4 articulaciones{0};
+    glm::vec4 pesos{0.0f};
+};
+
+inline constexpr const char* ARTICULACIONES[] = {
+    "J_Cadera", "J_Cabeza", "J_HombroI", "J_CodoI", "J_ManoI",
+    "J_HombroD", "J_CodoD", "J_ManoD", "J_MusloI", "J_RodillaI", "J_MusloD", "J_RodillaD"
+};
+inline constexpr int NUM_ARTICULACIONES = 12;
 
 // Tipo de material segun la rubrica (opacos, plasticos, traslucidos, metalicos)
-enum TipoMaterial { MAT_OPACO = 0, MAT_PLASTICO = 1, MAT_METALICO = 2, MAT_TRASLUCIDO = 3, MAT_EMISIVO = 4 };
+enum TipoMaterial { MAT_OPACO = 0, MAT_PLASTICO = 1, MAT_METALICO = 2, MAT_TRASLUCIDO = 3, MAT_EMISIVO = 4, MAT_SENAL = 5, MAT_NEGRO = 6 };
 
 struct MaterialEscena {
     std::string nombre;
@@ -72,10 +82,12 @@ struct MaterialEscena {
     float reflectividad = 0.0f;  // cuanto refleja el cubemap (metales)
     GLuint texturaDifusa = 0;    // 0 = sin textura
     TipoMaterial tipo = MAT_OPACO;
+    bool decal = false;          // grafico sobre la cara de un letrero
 };
 
 struct Malla {
     GLuint vao = 0, vbo = 0, ebo = 0;
+    GLuint vboPiel = 0;
     GLsizei numIndices = 0;
     unsigned int material = 0;
     glm::vec3 aabbMin = glm::vec3(FLT_MAX);  // caja en coordenadas locales de la malla
@@ -157,8 +169,128 @@ public:
     }
 
     // ========================================================================
-    // BLOQUE E. Jerarquia: matrices globales y cajas envolventes
+    // BLOQUE E. Recursos, jerarquia: matrices globales y cajas envolventes
     // ========================================================================
+    ~ModeloEscena() {
+        auto liberar = [](const auto& m) {
+            glDeleteVertexArrays(1, &m.vao);
+            glDeleteBuffers(1, &m.vbo);
+            glDeleteBuffers(1, &m.ebo);
+        };
+        for (const Malla& m : mallas) {
+            liberar(m);
+            if (m.vboPiel) glDeleteBuffers(1,&m.vboPiel);
+        }
+        for (const Lote& l : lotes) liberar(l);
+        for (const auto& t : cacheTexturas) if (t.second) glDeleteTextures(1, &t.second);
+    }
+
+    ModeloEscena(const ModeloEscena&) = delete;
+    ModeloEscena& operator=(const ModeloEscena&) = delete;
+
+    // Geometria auxiliar para cerrar las vistas entre plantas, sin texturas.
+    // Se agrega antes de construir lotes para dibujarla con el resto de la escena.
+    void AgregarBloqueNegro(const std::string& nombre, const glm::vec3& mn, const glm::vec3& mx) {
+        if (nodos.empty()) return;
+        if (materiales.empty() || materiales.back().tipo != MAT_NEGRO) {
+            MaterialEscena negro;
+            negro.nombre = "Fondo negro";
+            negro.tipo = MAT_NEGRO;
+            materiales.push_back(negro);
+        }
+        std::vector<VerticeEscena> v;
+        for (int i = 0; i < 8; ++i)
+            v.push_back({ { (i & 1) ? mx.x : mn.x, (i & 2) ? mx.y : mn.y, (i & 4) ? mx.z : mn.z },
+                          { 0, 1, 0 }, { 0, 0 } });
+        std::vector<unsigned int> idx = {
+            0, 2, 1, 1, 2, 3, 4, 5, 6, 5, 7, 6, 0, 1, 4, 1, 5, 4,
+            2, 6, 3, 3, 6, 7, 0, 4, 2, 2, 4, 6, 1, 3, 5, 3, 7, 5
+        };
+        Malla m;
+        m.material = (unsigned int)materiales.size() - 1;
+        m.aabbMin = mn; m.aabbMax = mx;
+        m.numIndices = (GLsizei)idx.size();
+        SubirBuffers(v, idx, m.vao, m.vbo, m.ebo);
+        Nodo n;
+        n.nombre = nombre;
+        n.padre = 0;
+        n.local = glm::inverse(nodos[0].global);   // las coordenadas del bloque ya estan en mundo
+        n.mallas.push_back((unsigned int)mallas.size());
+        nodos[0].hijos.push_back((int)nodos.size());
+        nodos.push_back(std::move(n));
+        mallas.push_back(m);
+        verticesCpu.push_back(std::move(v));
+        indicesCpu.push_back(std::move(idx));
+    }
+
+    // Las letras de algunos FBX estan pegadas al panel (o dentro de el).
+    // Separa los dos juegos de letras hacia sus respectivas caras.
+    void SepararLetras(unsigned int mi, const glm::mat4& modelo, float centroZ) {
+        Malla& m = mallas[mi];
+        auto& vertices = verticesCpu[mi];
+        glm::vec3 paso = glm::vec3(glm::inverse(modelo) * glm::vec4(0, 0, 0.006f, 0));
+        m.aabbMin = glm::vec3(FLT_MAX);
+        m.aabbMax = glm::vec3(-FLT_MAX);
+        for (VerticeEscena& v : vertices) {
+            const float z = (modelo * glm::vec4(v.posicion, 1.0f)).z;
+            v.posicion += z < centroZ ? -paso : paso;
+            m.aabbMin = glm::min(m.aabbMin, v.posicion);
+            m.aabbMax = glm::max(m.aabbMax, v.posicion);
+        }
+        glBindBuffer(GL_ARRAY_BUFFER, m.vbo);
+        glBufferSubData(GL_ARRAY_BUFFER, 0, vertices.size() * sizeof(VerticeEscena), vertices.data());
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+    }
+
+    // FBX asigna el primer material del letrero a las letras sin material.
+    // En esas mallas mixtas los iconos son unos pocos triangulos grandes,
+    // mientras que la tipografia esta formada por muchos triangulos pequenos.
+    void SepararLetrasDeIcono(unsigned int mi, const glm::mat4& modelo, float centroZ, bool claras) {
+        const auto& v = verticesCpu[mi];
+        std::vector<unsigned int> icono, letras;
+        const auto& idx = indicesCpu[mi];
+        for (size_t i = 0; i + 2 < idx.size(); i += 3) {
+            const auto& a = v[idx[i]];
+            const auto& b = v[idx[i + 1]];
+            const auto& c = v[idx[i + 2]];
+            const glm::vec3 ab = glm::mat3(modelo) * (b.posicion - a.posicion);
+            const glm::vec3 ac = glm::mat3(modelo) * (c.posicion - a.posicion);
+            const glm::vec2 uv1 = b.uv - a.uv, uv2 = c.uv - a.uv;
+            const bool esIcono = glm::length(glm::cross(ab, ac)) > 0.028f &&
+                                 std::fabs(uv1.x * uv2.y - uv1.y * uv2.x) > 0.12f;
+            auto& destino = esIcono ? icono : letras;
+            destino.insert(destino.end(), idx.begin() + i, idx.begin() + i + 3);
+        }
+        if (icono.empty() || icono.size() > 24 || letras.size() < 600) return;
+
+        MaterialEscena tinta;
+        tinta.nombre = "Letras del letrero";
+        tinta.difuso = glm::vec3(claras ? 0.92f : 0.025f);
+        tinta.tipo = MAT_SENAL;
+        Malla texto;
+        texto.material = (unsigned int)materiales.size();
+        materiales.push_back(tinta);
+        texto.numIndices = (GLsizei)letras.size();
+        SubirBuffers(v, letras, texto.vao, texto.vbo, texto.ebo);
+
+        Malla& original = mallas[mi];
+        original.numIndices = (GLsizei)icono.size();
+        glBindVertexArray(original.vao);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, icono.size() * sizeof(unsigned int), icono.data(), GL_STATIC_DRAW);
+        glBindVertexArray(0);
+        indicesCpu[mi] = std::move(icono);
+
+        const unsigned int nuevo = (unsigned int)mallas.size();
+        mallas.push_back(texto);
+        // Guardar una copia antes de que crezca el vector que contiene v.
+        auto verticesTexto = v;
+        verticesCpu.push_back(std::move(verticesTexto));
+        indicesCpu.push_back(std::move(letras));
+        SepararLetras(nuevo, modelo, centroZ);
+        for (Nodo& n : nodos)
+            if (std::find(n.mallas.begin(), n.mallas.end(), mi) != n.mallas.end()) n.mallas.push_back(nuevo);
+    }
+
     // Recorre el arbol desde la raiz. Los padres siempre tienen indice menor
     // que sus hijos (se leyeron en ese orden), asi que basta un ciclo.
     void ActualizarJerarquia() {
@@ -314,7 +446,7 @@ private:
 
     static bool MismoMaterial(const MaterialEscena& a, const MaterialEscena& b) {
         auto igual = [](const glm::vec3& x, const glm::vec3& y) { return glm::length(x - y) < 0.01f; };
-        return a.tipo == b.tipo && a.texturaDifusa == b.texturaDifusa && igual(a.difuso, b.difuso) &&
+        return a.tipo == b.tipo && a.decal == b.decal && a.texturaDifusa == b.texturaDifusa && igual(a.difuso, b.difuso) &&
                igual(a.especular, b.especular) && igual(a.emision, b.emision) &&
                std::fabs(a.brillo - b.brillo) < 1.0f && std::fabs(a.opacidad - b.opacidad) < 0.01f;
     }
@@ -482,6 +614,34 @@ private:
             for (unsigned int j = 0; j < m->mFaces[i].mNumIndices; j++) indices.push_back(m->mFaces[i].mIndices[j]);
         malla.numIndices = (GLsizei)indices.size();
         SubirBuffers(vertices, indices, malla.vao, malla.vbo, malla.ebo);
+        // Mantener el formato compacto de andenes, edificios y tren.
+        std::vector<VerticePiel> piel(m->mNumBones ? m->mNumVertices : 0);
+        for (unsigned int i = 0; i < m->mNumBones; ++i) {
+            const aiBone& hueso = *m->mBones[i];
+            int j = 0;
+            while (j < NUM_ARTICULACIONES && std::string(hueso.mName.C_Str()) != ARTICULACIONES[j]) ++j;
+            if (j == NUM_ARTICULACIONES) continue;
+            for (unsigned int k = 0; k < hueso.mNumWeights; ++k) {
+                const aiVertexWeight& w = hueso.mWeights[k];
+                VerticePiel& v = piel[w.mVertexId];
+                for (int canal = 0; canal < 4; ++canal) if (v.pesos[canal] == 0.0f) {
+                    v.articulaciones[canal] = j;
+                    v.pesos[canal] = w.mWeight;
+                    break;
+                }
+            }
+        }
+        if (!piel.empty()) {
+            glBindVertexArray(malla.vao);
+            glGenBuffers(1,&malla.vboPiel);
+            glBindBuffer(GL_ARRAY_BUFFER,malla.vboPiel);
+            glBufferData(GL_ARRAY_BUFFER,piel.size()*sizeof(VerticePiel),piel.data(),GL_STATIC_DRAW);
+            glEnableVertexAttribArray(3);
+            glVertexAttribIPointer(3,4,GL_INT,sizeof(VerticePiel),(void*)offsetof(VerticePiel,articulaciones));
+            glEnableVertexAttribArray(4);
+            glVertexAttribPointer(4,4,GL_FLOAT,GL_FALSE,sizeof(VerticePiel),(void*)offsetof(VerticePiel,pesos));
+            glBindVertexArray(0);
+        }
         verticesCpu.push_back(std::move(vertices));
         indicesCpu.push_back(std::move(indices));
         return malla;

@@ -57,6 +57,7 @@
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
     <ClCompile>
       <Optimization>Disabled</Optimization>
+      <DebugInformationFormat>OldStyle</DebugInformationFormat>
       <PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <Link>
@@ -68,6 +69,7 @@
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Release'">
     <ClCompile>
       <Optimization>MaxSpeed</Optimization>
+      <DebugInformationFormat>None</DebugInformationFormat>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
@@ -89,6 +91,9 @@
     <ClInclude Include="include\modelo_escena.h" />
     <ClInclude Include="include\keyframes.h" />
     <ClInclude Include="include\colisiones.h" />
+    <ClInclude Include="include\torniquetes.h" />
+    <ClInclude Include="include\pasajeros.h" />
+    <ClInclude Include="include\flujo_pasajeros.h" />
     <ClInclude Include="include\camera.h" />
     <ClInclude Include="include\shader_m.h" />
     <ClInclude Include="include\cubemap.h" />

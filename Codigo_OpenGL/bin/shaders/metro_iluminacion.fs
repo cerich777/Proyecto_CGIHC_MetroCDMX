@@ -32,6 +32,8 @@ out vec4 FragColor;
 #define MAT_METALICO   2
 #define MAT_TRASLUCIDO 3
 #define MAT_EMISIVO    4
+#define MAT_SENAL      5
+#define MAT_NEGRO      6
 
 // Material (viene del FBX exportado desde Blender)
 uniform vec3  colorDifuso;
@@ -102,9 +104,10 @@ void main()
 {
     if (posMundo.y > alturaCorte) discard;     // corte tipo maqueta en la vista aerea
 
-    vec3 N = normalize(normalMundo);
-    vec3 V = normalize(posCamara - posMundo);   // hacia la camara
-    if (!gl_FrontFacing) N = -N;                // caras vistas por detras (planos de un solo lado)
+    if (tipoMaterial == MAT_NEGRO) {
+        FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+        return;
+    }
 
     // Color base: textura o color del material
     vec4 base = vec4(colorDifuso, 1.0);
@@ -114,6 +117,18 @@ void main()
         base = texel;
     }
 
+    // Los graficos del letrero conservan el contraste al pasar bajo una lampara.
+    if (tipoMaterial == MAT_SENAL) {
+        float d = length(posCamara - posMundo);
+        float visibilidad = exp(-pow(d * densidadNiebla, 2.0));
+        FragColor = vec4(mix(colorNiebla, clamp(base.rgb * 0.88 + colorEmision * base.rgb, 0.0, 1.0),
+                             visibilidad), opacidad * base.a);
+        return;
+    }
+
+    vec3 N = normalize(normalMundo);
+    vec3 V = normalize(posCamara - posMundo);
+    if (!gl_FrontFacing) N = -N;
     // Phong: ambiente + sol + luces puntuales
     vec3 color = luzAmbiente * base.rgb + LuzDireccional(N, V, base.rgb);
     for (int i = 0; i < numLuces; ++i)
