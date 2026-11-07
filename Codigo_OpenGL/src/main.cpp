@@ -264,6 +264,7 @@ void SeleccionarLuces(const glm::vec3& desde);
 void ActualizarCamara(float dt);
 void ObtenerMatrices(glm::mat4& proyeccion, glm::mat4& vista);
 void Renderizar();
+void DibujarPaisaje(const glm::mat4& proyeccion, const glm::mat4& vista);
 void RenderizarPicking(const glm::mat4& proyeccion, const glm::mat4& vista);
 void DibujarHUD();
 void ActualizarInteraccion(float dt);
@@ -1030,6 +1031,16 @@ void SeleccionarLuces(const glm::vec3& desde)
             lucesColor.push_back({.44f,.47f,.51f});
             lucesRadio.push_back(2.8f);
         }
+        // Simulacion de movimiento: lamparas del tunel que pasan por las
+        // ventanas de ambos lados (se desplazan hacia -X a 15 m/s, cada 12 m)
+        float corrimiento = std::fmod(tiempoTotal * 15.0f, 12.0f);
+        for (int i = 0; i < 3; ++i) {
+            float x = centroVagon.x + 12.0f - corrimiento - 12.0f * i;
+            float lado = (i % 2 == 0) ? 2.2f : -2.2f;
+            lucesPos.push_back({x, 1.6f, centroVagon.z + lado});
+            lucesColor.push_back({1.1f, .95f, .7f});
+            lucesRadio.push_back(5.0f);
+        }
         return;
     }
     const glm::vec3 colorLampara(1.0f, 0.95f, 0.85f);   // blanco calido
@@ -1136,6 +1147,15 @@ void ObtenerMatrices(glm::mat4& proyeccion, glm::mat4& vista)
     } else {
         proyeccion = glm::perspective(glm::radians(camara.Zoom + 15.0f), aspecto, 0.05f, 1000.0f);
         vista = camara.GetViewMatrix();
+        if (aBordo) {
+            // Simulacion de movimiento: el vagon se mece y vibra (senoidales)
+            float t = tiempoTotal;
+            float rebote = 0.010f * std::sin(t * 21.0f) + 0.006f * std::sin(t * 6.7f);
+            float alabeo = glm::radians(0.8f) * std::sin(t * 1.3f);
+            glm::mat4 vaiven = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, rebote, 0.0f));
+            vaiven = glm::rotate(vaiven, alabeo, glm::vec3(1.0f, 0.0f, 0.0f));   // eje largo del tren
+            vista = vista * glm::inverse(vaiven);
+        }
     }
 }
 
@@ -1263,6 +1283,58 @@ void DibujarPasajeros(const Frustum& fr, const glm::vec3& ojo)
     glUniform1i(uniformPiel,GL_FALSE);
 }
 
+// ---------------------------------------------------------------------------
+// Paisaje en movimiento (simula que el tren avanza)
+// Dos planos largos afuera de las ventanas con una foto panoramica. Cada
+// cuadro se recorre la coordenada U de la textura: el paisaje "pasa".
+// Imagen: "Urban Street 01", Poly Haven (CC0) - bin/textures/paisaje.jpg
+// ---------------------------------------------------------------------------
+void DibujarPaisaje(const glm::mat4& proyeccion, const glm::mat4& vista)
+{
+    static Shader* shaderPaisaje = nullptr;
+    static GLuint vao = 0, vbo = 0, textura = 0;
+    if (!shaderPaisaje) {
+        shaderPaisaje = new Shader("shaders/metro_paisaje.vs", "shaders/metro_paisaje.fs");
+        int w, h, c;
+        unsigned char* datos = stbi_load("textures/paisaje.jpg", &w, &h, &c, 3);
+        glGenTextures(1, &textura);
+        glBindTexture(GL_TEXTURE_2D, textura);
+        if (datos) glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, w, h, 0, GL_RGB, GL_UNSIGNED_BYTE, datos);
+        stbi_image_free(datos);
+        glGenerateMipmap(GL_TEXTURE_2D);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);   // la panoramica se repite sin corte
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        // Un plano a lo largo de X: posicion (x, y, z) + uv
+        float L = 80.0f, abajo = -3.0f, arriba = 9.0f;
+        float v[] = { -L, abajo, 0, 0, 0,   L, abajo, 0, 1, 0,   L, arriba, 0, 1, 1,
+                      -L, abajo, 0, 0, 0,   L, arriba, 0, 1, 1, -L, arriba, 0, 0, 1 };
+        glGenVertexArrays(1, &vao);
+        glGenBuffers(1, &vbo);
+        glBindVertexArray(vao);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(v), v, GL_STATIC_DRAW);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)0);
+        glEnableVertexAttribArray(2);
+        glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float)));
+    }
+    shaderPaisaje->use();
+    shaderPaisaje->setMat4("projection", proyeccion);
+    shaderPaisaje->setMat4("view", vista);
+    shaderPaisaje->setFloat("desplazamiento", tiempoTotal * 0.03f);   // velocidad del paisaje
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, textura);
+    shaderPaisaje->setInt("paisaje", 0);
+    glBindVertexArray(vao);
+    for (int lado = -1; lado <= 1; lado += 2) {   // un plano a cada lado del vagon
+        glm::mat4 m = glm::translate(glm::mat4(1.0f), glm::vec3(centroVagon.x, 0.0f, centroVagon.z + lado * 1.6f));
+        shaderPaisaje->setMat4("model", m);
+        shaderPaisaje->setFloat("sentido", (float)lado);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+    }
+    glBindVertexArray(0);
+}
+
 void Renderizar()
 {
     if (fundido >= 1.0f) {
@@ -1371,6 +1443,9 @@ void Renderizar()
     glDrawArrays(GL_TRIANGLES, 0, 36);
     glDepthFunc(GL_LESS);
     if (modoCamara == CAM_AEREA) ObtenerMatrices(proyeccion, vista);
+
+    // ---- 10.4b Paisaje en movimiento (solo dentro del vagon) ----
+    if (aBordo) DibujarPaisaje(proyeccion, vista);
 
     // ---- 10.5 TRASLUCIDOS: de atras hacia adelante, sin escribir profundidad ----
     std::sort(traslucidos.begin(), traslucidos.end(),
