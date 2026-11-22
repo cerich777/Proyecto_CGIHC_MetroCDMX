@@ -105,15 +105,17 @@ public:
         }),arriba.end());
         if (!horaPico || !Disponible()) return;
         // Pasillos a ambos lados de los torniquetes, sin ocupar sus carriles.
-        const float carriles[] = {-16.0f,-6.0f,2.1f};
-        const float tramos[] = {-59.0f,-51.0f,-43.0f,-35.0f,31.0f,39.0f,47.0f,55.0f};
-        for (int carril=0;carril<3;++carril) for (int tramo=0;tramo<8;++tramo) {
+        // Hora pico CDMX: muchos mas pasajeros en los pasillos
+        const float carriles[] = {-16.0f,-11.0f,-6.0f,-1.5f,2.5f};
+        const float tramos[] = {-61.0f,-55.0f,-49.0f,-43.0f,-37.0f,-31.0f,
+                                29.0f,35.0f,41.0f,47.0f,53.0f,59.0f};
+        for (int carril=0;carril<5;++carril) for (int tramo=0;tramo<12;++tramo) {
             glm::vec3 origen(carriles[carril],.019f,tramos[tramo]+(carril%2?2.0f:0.0f));
             origen=navAlta.Aproximar(origen);
             if (!mundo.Libre(origen)) continue;
             bool separado=true;
             for (const auto& otro:arriba)
-                if (otro.visible && DistanciaXZ(origen,otro.pos)<1.15f) { separado=false; break; }
+                if (otro.visible && DistanciaXZ(origen,otro.pos)<0.9f) { separado=false; break; }
             if (!separado) continue;
             Pasajero p=Nuevo(TipoPasajero((carril+tramo)%3),origen,arriba.size());
             p.refuerzoHoraPico=true;
@@ -122,6 +124,35 @@ public:
             p.espera=.25f*float((carril+tramo)%5);
             arriba.push_back(std::move(p));
         }
+    }
+
+    // Personas formadas (quietas) frente a maquinas y taquillas
+    // Devuelve el indice del primero (o -1)
+    int AgregarFila(const std::vector<glm::vec3>& puntos) {
+        if (!Disponible()) return -1;
+        int base=(int)arriba.size();
+        for (size_t i=0;i<puntos.size();++i) {
+            Pasajero p=Nuevo(TipoPasajero(i%3),puntos[i],arriba.size());
+            p.refuerzoHoraPico=true;
+            arriba.push_back(std::move(p));
+        }
+        return base;
+    }
+    // Manda a una persona de la fila a recorrer estos puntos
+    void Enviar(int i, const std::vector<glm::vec3>& puntos) {
+        if (i<0 || i>=(int)arriba.size()) return;
+        Pasajero& p=arriba[i];
+        p.plan.clear();
+        for (const auto& q:puntos) p.plan.push_back({q});
+        p.parada=0; p.paso=0; p.camino.clear(); p.espera=0;
+    }
+    // Si ya llego a 'destino', la oculta para siempre. Devuelve true al ocultarla.
+    bool Ocultar(int i, const glm::vec3& destino) {
+        if (i<0 || i>=(int)arriba.size()) return true;
+        Pasajero& p=arriba[i];
+        if (DistanciaXZ(p.pos,destino)>0.6f) return false;
+        p.visible=false; p.espera=1e9f; p.plan.clear();
+        return true;
     }
 
     std::vector<glm::vec3> SensoresAlta() const {
@@ -227,7 +258,20 @@ public:
         }),anden.end());
         if (!horaPico || !Disponible()) return;
         // Cuatro hileras repartidas por los dos andenes, cerca de las puertas.
-        for (int hilera=0;hilera<4;++hilera) for (int lugar=0;lugar<16;++lugar) {
+        // Filas fijas para abordar: 3 personas perpendiculares a la orilla, en ambos andenes
+        for (int lado_i=0;lado_i<2;++lado_i) for (int lugar=0;lugar<14;++lugar) for (int j=0;j<3;++j) {
+            float lado=lado_i?1.0f:-1.0f;
+            glm::vec3 origen(lado*(3.4f+.7f*j),0,-80.0f+11.0f*float(lugar));
+            TipoPasajero tipo=TipoPasajero((lugar+j)%3);
+            if (tipo==ADULTO && EsExclusivo(origen)) tipo=MUJER;
+            Pasajero p=Nuevo(tipo,origen,anden.size());
+            p.pos=p.inicio=NavAnden(p).Aproximar(origen);
+            if (!mundo.Libre(p.pos)) continue;
+            p.refuerzoHoraPico=true; p.estatico=true;
+            anden.push_back(std::move(p));
+        }
+        // Mas gente caminando, solo en las hileras de atras
+        for (int hilera=1;hilera<4;hilera+=2) for (int lugar=0;lugar<16;++lugar) {
             float lado=hilera<2?-1.0f:1.0f;
             float x=lado*(hilera%2?6.45f:3.55f);
             float z=-83.0f+10.8f*float(lugar)+(hilera%2?3.3f:0.0f);
@@ -268,6 +312,7 @@ public:
         if (exclusivo) restringido.obstaculos.push_back({minimoExclusivo,maximoExclusivo});
         for (auto& p:anden) {
             p.tiempo+=dt;
+            if (p.estatico) continue;
             p.pulso*=std::max(0.0f,1-5*dt);
             if (p.viaje==VIAJANDO) {
                 if (!ausente) continue;

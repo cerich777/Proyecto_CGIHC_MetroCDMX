@@ -34,6 +34,7 @@ struct Pasajero {
     int puerta = -1;
     bool visible = true, abordar = false, directo = false;
     bool refuerzoHoraPico = false;
+    bool estatico = false;          // formado en fila: no camina
     glm::vec3 paseo{0};
 };
 
