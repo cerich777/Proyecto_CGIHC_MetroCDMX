@@ -44,6 +44,7 @@ uniform float opacidad;
 uniform float reflectividad;   // peso del reflejo del cubemap
 uniform int   tipoMaterial;
 uniform int   usaTextura;
+uniform bool  usaPiel;          // personajes animados: controlar altas luces
 uniform sampler2D texture_diffuse1;
 uniform samplerCube cubemapAmbiente;
 
@@ -79,7 +80,7 @@ vec3 LuzPuntual(int i, vec3 N, vec3 V, vec3 baseColor)
     vec3  R        = reflect(-L, N);
     float cosAlpha = max(dot(V, R), 0.0);              // componente especular
     vec3  difusa   = baseColor * cosTheta;
-    vec3  especular = colorEspecular * pow(cosAlpha, brillo) * step(0.0, cosTheta);
+    vec3  especular = min(colorEspecular * pow(cosAlpha, brillo), vec3(0.28)) * step(0.0, cosTheta);
     return (difusa + especular) * luzColor[i] * ate;
 }
 
@@ -90,7 +91,7 @@ vec3 LuzDireccional(vec3 N, vec3 V, vec3 baseColor)
     float cosTheta = max(dot(N, L), 0.0);
     vec3  R = reflect(-L, N);
     float cosAlpha = max(dot(V, R), 0.0);
-    return (baseColor * cosTheta + colorEspecular * pow(cosAlpha, brillo) * step(0.0, cosTheta)) * solColor;
+    return (baseColor * cosTheta + min(colorEspecular * pow(cosAlpha, brillo), vec3(0.28)) * step(0.0, cosTheta)) * solColor;
 }
 
 // ---- D. Fresnel (aproximacion de Schlick, como en 11_Fresnel.vs) ------------
@@ -153,6 +154,7 @@ void main()
     // Emision (lamparas, pantallas, alarmas). Con textura, la emision la "ilumina"
     // en vez de taparla (asi las pantallas muestran su imagen y no se ven blancas)
     color += (usaTextura == 1) ? colorEmision * base.rgb : colorEmision;
+    if (usaPiel) color = color / (vec3(1.0) + color * 0.55);
 
     // Niebla exponencial: oculta el fin del modelo y da profundidad
     float d = length(posCamara - posMundo);

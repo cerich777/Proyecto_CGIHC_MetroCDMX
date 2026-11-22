@@ -33,6 +33,7 @@ struct Pasajero {
     size_t parada = 0, paso = 0;
     int puerta = -1;
     bool visible = true, abordar = false, directo = false;
+    bool refuerzoHoraPico = false;
     glm::vec3 paseo{0};
 };
 

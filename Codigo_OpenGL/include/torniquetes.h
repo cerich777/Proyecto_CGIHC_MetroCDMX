@@ -80,7 +80,7 @@ public:
     }
 
     void Actualizar(ModeloEscena& escena, MundoColision& mundo, const glm::vec3& jugador, float dt,
-                    const std::vector<glm::vec3>& pasajeros = {}) {
+                    const std::vector<glm::vec3>& pasajeros = {}, bool accesoPermitido = true) {
         for (Torniquete& t : carriles) {
             bool detectado = false;
             float dz = 1000.0f;
@@ -95,8 +95,10 @@ public:
                     if (std::fabs(distancia) < std::fabs(dz)) dz = distancia;
                 }
             };
-            detectar(jugador);
-            for (const auto& p : pasajeros) detectar(p);
+            if (accesoPermitido) {
+                detectar(jugador);
+                for (const auto& p : pasajeros) detectar(p);
+            }
             if (detectado) {
                 if (t.avance == 0.0f) t.sentido = dz <= 0.0f ? 1.0f : -1.0f;
                 t.pausa = 0.45f;
@@ -105,7 +107,7 @@ public:
             }
 
             const float anterior = t.avance;
-            const bool abrir = detectado || t.pausa > 0.0f;
+            const bool abrir = accesoPermitido && (detectado || t.pausa > 0.0f);
             t.avance = glm::clamp(t.avance + (abrir ? dt / 0.36f : -dt / 0.52f), 0.0f, 1.0f);
             if (t.avance == anterior) continue;
             const float progreso = t.avance * t.avance * (3.0f - 2.0f * t.avance);

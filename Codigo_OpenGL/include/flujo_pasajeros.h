@@ -99,6 +99,31 @@ public:
         salida(ADULTO,5,carril(2.5f,1),{44.0f,.019f,55.4f},2.3f);
     }
 
+    void AjustarAfluenciaAlta(bool horaPico, const MundoColision& mundo) {
+        arriba.erase(std::remove_if(arriba.begin(),arriba.end(),[](const Pasajero& p) {
+            return p.refuerzoHoraPico;
+        }),arriba.end());
+        if (!horaPico || !Disponible()) return;
+        // Pasillos a ambos lados de los torniquetes, sin ocupar sus carriles.
+        const float carriles[] = {-16.0f,-6.0f,2.1f};
+        const float tramos[] = {-59.0f,-51.0f,-43.0f,-35.0f,31.0f,39.0f,47.0f,55.0f};
+        for (int carril=0;carril<3;++carril) for (int tramo=0;tramo<8;++tramo) {
+            glm::vec3 origen(carriles[carril],.019f,tramos[tramo]+(carril%2?2.0f:0.0f));
+            origen=navAlta.Aproximar(origen);
+            if (!mundo.Libre(origen)) continue;
+            bool separado=true;
+            for (const auto& otro:arriba)
+                if (otro.visible && DistanciaXZ(origen,otro.pos)<1.15f) { separado=false; break; }
+            if (!separado) continue;
+            Pasajero p=Nuevo(TipoPasajero((carril+tramo)%3),origen,arriba.size());
+            p.refuerzoHoraPico=true;
+            glm::vec3 vuelta=navAlta.Aproximar(origen+glm::vec3(0,0,tramo%2?2.0f:-2.0f));
+            p.plan={ {vuelta}, {origen} };
+            p.espera=.25f*float((carril+tramo)%5);
+            arriba.push_back(std::move(p));
+        }
+    }
+
     std::vector<glm::vec3> SensoresAlta() const {
         std::vector<glm::vec3> p;
         for (const auto& a:arriba) if (a.visible) p.push_back(a.pos);
@@ -114,6 +139,10 @@ public:
                 p.camino.clear(); p.accion=QUIETO; p.tiempo=p.mezcla=0;
             }
             if (p.parada>=p.plan.size()) {
+                if (p.refuerzoHoraPico) {
+                    p.parada=0; p.camino.clear(); p.espera=1.5f;
+                    continue;
+                }
                 p.visible=false; p.espera=9.0f+.6f*float(&p-arriba.data());
                 if (p.puerta>=0) { ++escaleras; bajadas.push_back({p.tipo,p.puerta}); }
                 else ++salidas;
@@ -192,9 +221,40 @@ public:
         }
     }
 
+    void AjustarAfluenciaAnden(bool horaPico, const MundoColision& mundo) {
+        anden.erase(std::remove_if(anden.begin(),anden.end(),[](const Pasajero& p) {
+            return p.refuerzoHoraPico;
+        }),anden.end());
+        if (!horaPico || !Disponible()) return;
+        // Cuatro hileras repartidas por los dos andenes, cerca de las puertas.
+        for (int hilera=0;hilera<4;++hilera) for (int lugar=0;lugar<16;++lugar) {
+            float lado=hilera<2?-1.0f:1.0f;
+            float x=lado*(hilera%2?6.45f:3.55f);
+            float z=-83.0f+10.8f*float(lugar)+(hilera%2?3.3f:0.0f);
+            TipoPasajero tipo=TipoPasajero((hilera+lugar)%3);
+            glm::vec3 origen(x,0,z);
+            if (tipo==ADULTO && EsExclusivo(origen)) tipo=MUJER;
+            Pasajero p=Nuevo(tipo,origen,anden.size());
+            p.pos=p.inicio=NavAnden(p).Aproximar(origen);
+            if (!mundo.Libre(p.pos)) continue;
+            bool separado=true;
+            for (const auto& otro:anden)
+                if (otro.visible && DistanciaXZ(p.pos,otro.pos)<1.10f) { separado=false; break; }
+            if (!separado) continue;
+            p.refuerzoHoraPico=true;
+            p.paseo=NavAnden(p).Aproximar(p.pos+glm::vec3(0,0,lugar%2?2.1f:-2.1f));
+            p.abordar=lugar%4!=0;
+            RutaAnden(p,p.paseo);
+            anden.push_back(std::move(p));
+        }
+    }
+
     void ActualizarAnden(const MundoColision& mundo, bool frenando, bool abiertas, bool ausente,
                          float desplazamiento, float dt) {
-        if (!bajadas.empty() && anden.size()<32 && !escalerasAnden.empty()) {
+        size_t pasajerosHabituales=std::count_if(anden.begin(),anden.end(),[](const Pasajero& p) {
+            return !p.refuerzoHoraPico;
+        });
+        if (!bajadas.empty() && pasajerosHabituales<32 && !escalerasAnden.empty()) {
             auto b=bajadas.back(); bajadas.pop_back();
             auto p=Nuevo(b.tipo,escalerasAnden[b.escalera].descanso,anden.size());
             if (p.tipo!=ADULTO || !EsExclusivo(p.pos)) {
@@ -272,7 +332,7 @@ public:
         }
     }
 
-    void PrepararVagon(const ModeloEscena& escena) {
+    void PrepararVagon(const ModeloEscena& escena, bool horaPico = false) {
         vagon.clear();
         if (!Disponible()) return;
         auto sentar=[&](TipoPasajero tipo,const char* nombre,bool yaSentado) {
@@ -301,13 +361,46 @@ public:
             p.giro=std::atan2(mano.x-pos.x,mano.z-pos.z)-.29f; p.mezcla=1;
             vagon.push_back(std::move(p));
         };
-        sujetar(ADULTO,{67.76f,.012f,.33f},{67.36f,1.24f,.60f});
-        sujetar(MUJER,{75.39f,.012f,-.24f},{74.91f,1.25f,-.60f});
-        Pasajero p=Nuevo(ADULTO,{73.8f,.012f,.16f},vagon.size()); p.giro=2.5f;
-        vagon.push_back(p);
+        // Cada pasamanos tiene dos tubos verticales en los extremos. Sus
+        // cajas del FBX permiten ubicar el eje real sin coordenadas a ojo.
+        auto agarrarTubo=[&](TipoPasajero tipo,const char* nombre,bool extremoFinal) {
+            int i=escena.Buscar(nombre);
+            if (i<0) return;
+            const Nodo& n=escena.nodos[i];
+            bool ladoPositivo=(n.aabbMin.z+n.aabbMax.z)>0.0f;
+            float x=extremoFinal?n.aabbMax.x-.04f:n.aabbMin.x+.04f;
+            float z=ladoPositivo?n.aabbMin.z+.115f:n.aabbMax.z-.115f;
+            float desplazamiento=(ladoPositivo?-1.0f:1.0f)*(extremoFinal?-1.0f:1.0f)*.35f;
+            glm::vec3 pos(x+desplazamiento,.012f,ladoPositivo?.43f:-.43f);
+            sujetar(tipo,pos,{x,1.23f,z});
+        };
+        agarrarTubo(ADULTO,"V05_Pasamanos_06",false);
+        agarrarTubo(MUJER,"V05_Pasamanos_01",false);
+        if (!horaPico) {
+            Pasajero p=Nuevo(ADULTO,{73.8f,.012f,.16f},vagon.size()); p.giro=2.5f;
+            vagon.push_back(p);
+        }
         const char* extras[]={"Asiento_03","Asiento_13","Asiento_24","Asiento_28","Asiento_33"};
         int i=0;
         for (const auto& a:anden) if (a.viaje==VIAJANDO && i<5) sentar(a.tipo,extras[i++],false);
+        if (horaPico) {
+            // Diez pasajeros adicionales junto a tubos reales; se alternan
+            // ambos lados para dejar un paso estrecho por el centro.
+            sentar(MUJER, "Asiento_01",true);
+            sentar(ADULTO,"Asiento_17",true);
+            sentar(NINO,  "Asiento_20",true);
+            sentar(ADULTO,"Asiento_30",true);
+            agarrarTubo(ADULTO,"V05_Pasamanos_03",false);
+            agarrarTubo(MUJER, "V05_Pasamanos_03",true);
+            agarrarTubo(MUJER, "V05_Pasamanos_02",false);
+            agarrarTubo(ADULTO,"V05_Pasamanos_02",true);
+            agarrarTubo(ADULTO,"V05_Pasamanos_01",true);
+            agarrarTubo(MUJER, "V05_Pasamanos_06",true);
+            agarrarTubo(ADULTO,"V05_Pasamanos_05",false);
+            agarrarTubo(MUJER, "V05_Pasamanos_05",true);
+            agarrarTubo(MUJER, "V05_Pasamanos_04",false);
+            agarrarTubo(ADULTO,"V05_Pasamanos_04",true);
+        }
     }
 
     void ActualizarVagon(float dt) {

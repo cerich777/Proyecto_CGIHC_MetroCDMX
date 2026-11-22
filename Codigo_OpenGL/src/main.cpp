@@ -50,6 +50,7 @@
 #include <cstdio>
 #include <cstring>
 #include <direct.h>   // _mkdir (carpeta de capturas)
+#include <windows.h>  // carteles de texto dentro de la ventana
 
 #include <glad/glad.h>                  // Cargador de funciones de OpenGL
 #include <GLFW/glfw3.h>                 // Ventana, teclado y mouse
@@ -132,7 +133,13 @@ float giroAlAnden = 0.0f, inclinacionAlAnden = 0.0f;
 glm::vec3 centroVagon;
 GLint uniformPiel = -1, uniformPose = -1;
 CubeMap* cielo = nullptr;
-GLuint vaoHUD = 0, vboHUD = 0;
+GLuint vaoHUD = 0, vboHUD = 0, texturaCartel = 0;
+std::string cartelActual;
+enum Nivel { NIVEL_NOVATO, NIVEL_MEDIO, NIVEL_EXPERTO, NIVEL_LIBRE };
+int nivel = -1; // selector inicial
+bool tarjetaRecargada = false, misionCumplida = false;
+float avisoBloqueoHasta = 0.0f;
+std::vector<glm::vec3> puntosRecarga;
 
 // Ubicaciones de uniforms del shader principal (se buscan una sola vez)
 struct UniformsIluminacion {
@@ -273,6 +280,13 @@ void ActualizarFundido(float dt);
 void EntrarEscenaVagon();
 void SalirEscenaVagon();
 bool ProbarPasajeros();
+bool ProbarNiveles();
+void IniciarNivel(int elegido);
+bool CercaDeRecarga();
+bool JuntoAPuerta();
+int EscaleraCercana();
+void ActualizarCartel();
+void PrepararCartel(const std::string& texto);
 void ProcesarEntrada(float dt);
 void callbackTamano(GLFWwindow* w, int ancho, int alto);
 void callbackMouse(GLFWwindow* w, double x, double y);
@@ -288,8 +302,9 @@ void ReproducirSonido(const char* ruta);
 // ============================================================================
 int main(int argc, char** argv)
 {
-    bool probarEscaleras = false, probarTorniquetes = false, probarPasajeros = false, iniciarVagon = false;
+    bool probarEscaleras = false, probarTorniquetes = false, probarPasajeros = false, probarNiveles = false, iniciarVagon = false;
     bool camaraInicialIndicada = false;
+    int nivelInicial = -1;
     // Opciones de linea de comandos (solo para pruebas y capturas del reporte)
     //   --modelo ruta.fbx      usa otro archivo
     //   --captura salida.bmp   guarda una imagen despues de N segundos y cierra
@@ -307,6 +322,8 @@ int main(int argc, char** argv)
         else if (a == "--probar-escaleras") probarEscaleras = true;
         else if (a == "--probar-torniquetes") probarTorniquetes = true;
         else if (a == "--probar-pasajeros") probarPasajeros = true;
+        else if (a == "--probar-niveles") probarNiveles = true;
+        else if (a == "--nivel" && i + 1 < argc) nivelInicial = glm::clamp(atoi(argv[++i]) - 1, 0, 3);
         else if (a == "--interior-tren") iniciarVagon = true;
         else if (a == "--modo" && i + 1 < argc) modoCamara = (ModoCamara)atoi(argv[++i]);
         else if (a == "--cam" && i + 5 < argc) {
@@ -319,10 +336,11 @@ int main(int argc, char** argv)
         }
     }
 
-    if (!Inicializar(probarEscaleras || probarTorniquetes || probarPasajeros || !archivoCapturaAuto.empty())) return -1;
+    if (!Inicializar(probarEscaleras || probarTorniquetes || probarPasajeros || probarNiveles || !archivoCapturaAuto.empty())) return -1;
     auto cerrar = [] {
         pasajeros.Liberar();
         estacion.reset(); interiorGuardado.reset(); escenaAndenEnEspera.reset();
+        if (texturaCartel) { glDeleteTextures(1, &texturaCartel); texturaCartel = 0; }
         if (motorSonido) motorSonido->drop();
         glfwTerminate();
     };
@@ -339,10 +357,17 @@ int main(int argc, char** argv)
             camara.ProcessMouseMovement(0, 0);
         }
     }
-    if (probarEscaleras || probarTorniquetes || probarPasajeros) {
+    if (nivelInicial >= 0 && !probarEscaleras && !probarTorniquetes && !probarPasajeros && !probarNiveles)
+        IniciarNivel(nivelInicial);
+    else if (probarEscaleras || probarTorniquetes || probarPasajeros || probarNiveles || !archivoCapturaAuto.empty()) {
+        nivel = NIVEL_LIBRE;
+        ActualizarCartel();
+    }
+    if (probarEscaleras || probarTorniquetes || probarPasajeros || probarNiveles) {
         bool ok = !probarEscaleras || ProbarEscaleras();
         if (ok && probarTorniquetes) ok = (plantaAlta || CargarPlanta(true)) && ProbarTorniquetes();
         if (ok && probarPasajeros) ok = ProbarPasajeros();
+        if (ok && probarNiveles) ok = ProbarNiveles();
         cerrar();
         return ok ? 0 : 1;
     }
@@ -355,12 +380,18 @@ int main(int argc, char** argv)
             ActualizarAnimaciones(paso);
             if (modoCamara != CAM_LIBRE && modoCamara != CAM_PRIMERA_PERSONA) ActualizarCamara(paso);
         }
+        if (iniciarVagon && plantaAlta && nivel==NIVEL_EXPERTO) {
+            tarjetaRecargada=true;
+            if (!CargarPlanta(false)) { cerrar(); return 1; }
+        }
         if (iniciarVagon && !plantaAlta) {
             const Camera vistaPedida=camara;
             EntrarEscenaVagon();
             if (!aBordo) { cerrar(); return 1; }
             if (camaraInicialIndicada) camara=vistaPedida;
             for (int i=0;i<45;++i) ActualizarAnimaciones(paso);
+            if (nivel != NIVEL_LIBRE) misionCumplida=true;
+            ActualizarCartel();
         }
         // Un framebuffer propio permite capturar aunque la ventana este oculta.
         GLuint fbo=0,color=0,profundidad=0;
@@ -405,10 +436,20 @@ int main(int argc, char** argv)
         tiempoTotal += deltaTime;
 
         ProcesarEntrada(deltaTime);
+        if (nivel < 0) {
+            ActualizarCartel(); Renderizar();
+            glfwSwapBuffers(ventana); glfwPollEvents(); continue;
+        }
         ActualizarAnimaciones(deltaTime);
         if (!aBordo) ActualizarInteraccion(deltaTime);
         ActualizarCamara(deltaTime);
+        if (nivel == NIVEL_EXPERTO && plantaAlta && !tarjetaRecargada)
+            for (const auto& t : torniquetesAlta.carriles)
+                if (glm::length(glm::vec2(posJugador.x - t.centro.x, posJugador.z - t.centro.y)) < 2.5f)
+                    avisoBloqueoHasta = tiempoTotal + 2.0f;
         ActualizarFundido(deltaTime);
+        if (aBordo && nivel != NIVEL_LIBRE) misionCumplida = true;
+        ActualizarCartel();
         if (!estacion) break;
         estacion->ActualizarJerarquia();
 
@@ -673,6 +714,15 @@ bool PrepararPlantaAlta()
     }
 
     std::vector<int> referencias = torniquetesAlta.Preparar(E, colisionPlantaAlta);
+    puntosRecarga.clear();
+    for (int i : E.BuscarPrefijo("Maquinas_Recarga")) {
+        const Nodo& n = E.nodos[i];
+        if (n.aabbMax.x > n.aabbMin.x) puntosRecarga.push_back((n.aabbMin+n.aabbMax)*.5f);
+    }
+    for (int i : E.BuscarPrefijo("Taquilla_Cuerpo")) {
+        const Nodo& n = E.nodos[i];
+        if (n.aabbMax.x > n.aabbMin.x) puntosRecarga.push_back((n.aabbMin+n.aabbMax)*.5f);
+    }
 
     // Los gabinetes y barandales se quedan fijos. Las hojas ya tienen cajas moviles.
     for (size_t i = 0; i < E.nodos.size(); ++i) {
@@ -696,6 +746,7 @@ bool PrepararPlantaAlta()
     RegistrarInteractivos(E, {"Letrero_Andenes_", "Letrero_Salida_", "Mural"}, objetosGuardadosAlta, false);
     for (const auto& objeto : interactivos) referencias.push_back(objeto.nodo);
     pasajeros.PrepararAlta(E,colisionPlantaAlta,torniquetesAlta,EscalerasParaPasajeros(accesosAlta));
+    pasajeros.AjustarAfluenciaAlta(nivel==NIVEL_EXPERTO,colisionPlantaAlta);
     E.ActualizarJerarquia();
     E.ConstruirLotes(std::vector<char>(E.nodos.size(), 0), referencias, 20.0f);
     return true;
@@ -828,6 +879,7 @@ void PrepararEscena()
 
     PrepararAccesosAnden(E);
     pasajeros.PrepararAnden(E,colisionAnden,std::move(accesosTren),EscalerasParaPasajeros(accesosAnden));
+    pasajeros.AjustarAfluenciaAnden(nivel==NIVEL_EXPERTO,colisionAnden);
     MaterialesDeSenales(E, { "Terminal_", "Proxima_", "Exclusivo_", "Direccion_Indios", "Emergencia_" });
 
     // ---- 6.9 Lotes (rendimiento) ----
@@ -863,7 +915,8 @@ void ActualizarAnimaciones(float dt)
 {
     if (aBordo) { pasajeros.ActualizarVagon(dt); return; }
     if (plantaAlta) {
-        torniquetesAlta.Actualizar(*estacion, colisionPlantaAlta, posJugador, dt, pasajeros.SensoresAlta());
+        torniquetesAlta.Actualizar(*estacion, colisionPlantaAlta, posJugador, dt,
+                                  pasajeros.SensoresAlta(), nivel != NIVEL_EXPERTO || tarjetaRecargada);
         pasajeros.ActualizarAlta(colisionPlantaAlta,dt);
         return;     // los relojes del anden se pausan mientras se recorre arriba
     }
@@ -1055,10 +1108,10 @@ void SeleccionarLuces(const glm::vec3& desde)
     std::partial_sort(distancias.begin(), distancias.begin() + n, distancias.end());
     for (int i = 0; i < n; i++) {
         int k = distancias[i].second;
-        float potencia = plantaAlta ? 0.67f : (k == lamparaConFalla ? 1.3f * intensidadFalla : 1.3f);
-        lucesPos.push_back(posicionesLamparas[k]);
+        float potencia = plantaAlta ? 0.72f : (k == lamparaConFalla ? 1.05f * intensidadFalla : 1.05f);
+        lucesPos.push_back(posicionesLamparas[k] + glm::vec3(0.0f, 0.75f, 0.0f));
         lucesColor.push_back(colorLampara * potencia);
-        lucesRadio.push_back(9.0f);
+        lucesRadio.push_back(13.0f);
     }
 
     // Faro del tren: va en la cabina que entra primero (frente en -Z)
@@ -1369,9 +1422,9 @@ void Renderizar()
     }
     glUniform3f(U.solDireccion, -0.35f, -0.8f, 0.25f);
     glUniform3f(U.solColor, 0.55f, 0.52f, 0.47f);
-    if (aBordo) glUniform3f(U.luzAmbiente, .43f, .44f, .47f);
-    else if (plantaAlta) glUniform3f(U.luzAmbiente, 0.47f, 0.48f, 0.51f);
-    else glUniform3f(U.luzAmbiente, 0.30f, 0.31f, 0.34f);
+    if (aBordo) glUniform3f(U.luzAmbiente, .46f, .47f, .49f);
+    else if (plantaAlta) glUniform3f(U.luzAmbiente, 0.49f, 0.50f, 0.52f);
+    else glUniform3f(U.luzAmbiente, 0.39f, 0.40f, 0.42f);
     glUniform3f(U.colorNiebla, 0.55f, 0.62f, 0.70f);
     glUniform1f(U.densidadNiebla, modoCamara == CAM_AEREA ? 0.0f : 0.0065f);
     glUniform1f(U.alturaCorte, modoCamara == CAM_AEREA ? 2.9f : 1000.0f);   // sin techo en la vista aerea
@@ -1510,6 +1563,8 @@ void DibujarHUD()
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     shaderHUD->use();
+    shaderHUD->setInt("usaTextura", 0);
+    shaderHUD->setVec2("desplazamiento", 0.0f, 0.0f);
     glBindVertexArray(vaoHUD);
     float ar = (float)altoVentana / (float)anchoVentana;
 
@@ -1521,6 +1576,24 @@ void DibujarHUD()
         glDrawArrays(GL_TRIANGLES, 0, 6);
         shaderHUD->setVec2("escala", glm::vec2(0.0018f * ar, 0.012f));
         glDrawArrays(GL_TRIANGLES, 0, 6);
+    }
+    if (texturaCartel && !cartelActual.empty()) {
+        GLint modoPoligono[2];
+        glGetIntegerv(GL_POLYGON_MODE, modoPoligono);
+        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+        float sx = std::min(900.0f, (float)anchoVentana - 24.0f) / anchoVentana;
+        float sy = (float)(24 + 32 * (1 + std::count(cartelActual.begin(), cartelActual.end(), '\n'))) / altoVentana;
+        shaderHUD->setVec2("escala", sx, sy);
+        shaderHUD->setVec2("desplazamiento", -1.0f + sx + 12.0f / anchoVentana,
+                           1.0f - sy - 12.0f / altoVentana);
+        shaderHUD->setInt("usaTextura", 1);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, texturaCartel);
+        shaderHUD->setInt("textoHUD", 0);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+        shaderHUD->setInt("usaTextura", 0);
+        shaderHUD->setVec2("desplazamiento", 0.0f, 0.0f);
+        glPolygonMode(GL_FRONT_AND_BACK, modoPoligono[0]);
     }
     // Fundido a negro (transicion entre escenas)
     if (fundido > 0.0f) {
@@ -1534,6 +1607,90 @@ void DibujarHUD()
     }
     glDisable(GL_BLEND);
     glEnable(GL_DEPTH_TEST);
+}
+
+void PrepararCartel(const std::string& texto)
+{
+    if (texto == cartelActual) return;
+    cartelActual = texto;
+    const int w = 900, h = 24 + 32 * (1 + (int)std::count(texto.begin(), texto.end(), '\n'));
+    HDC dc = CreateCompatibleDC(nullptr);
+    BITMAPINFO info{};
+    info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    info.bmiHeader.biWidth = w;
+    info.bmiHeader.biHeight = -h;
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    info.bmiHeader.biCompression = BI_RGB;
+    void* bits = nullptr;
+    HBITMAP bmp = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
+    HGDIOBJ anterior = SelectObject(dc, bmp);
+    RECT rect{ 0, 0, w, h };
+    HBRUSH fondo = CreateSolidBrush(RGB(12, 24, 38));
+    FillRect(dc, &rect, fondo);
+    DeleteObject(fondo);
+    HFONT fuente = CreateFontA(-23, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+                               DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                               CLEARTYPE_QUALITY, DEFAULT_PITCH, "Segoe UI");
+    HGDIOBJ fuenteAnterior = SelectObject(dc, fuente);
+    SetBkMode(dc, TRANSPARENT);
+    int y = 12, inicio = 0, linea = 0;
+    while (inicio <= (int)texto.size()) {
+        size_t fin = texto.find('\n', inicio);
+        std::string renglon = texto.substr(inicio, fin == std::string::npos ? fin : fin - inicio);
+        SetTextColor(dc, linea == 0 ? RGB(255, 220, 90) : RGB(245, 248, 250));
+        TextOutA(dc, 18, y, renglon.c_str(), (int)renglon.size());
+        if (fin == std::string::npos) break;
+        inicio = (int)fin + 1;
+        y += 32; ++linea;
+    }
+    auto* px = static_cast<unsigned char*>(bits);
+    for (int i = 0; i < w * h; ++i) px[i * 4 + 3] = 235;
+    if (!texturaCartel) glGenTextures(1, &texturaCartel);
+    glBindTexture(GL_TEXTURE_2D, texturaCartel);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_BGRA, GL_UNSIGNED_BYTE, bits);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    SelectObject(dc, fuenteAnterior); DeleteObject(fuente);
+    SelectObject(dc, anterior); DeleteObject(bmp); DeleteDC(dc);
+}
+
+void ActualizarCartel()
+{
+    if (nivel < 0) {
+        PrepararCartel("ELIGE TU MODO\n[1] Novato  [2] Medio experimentado  [3] Experimentado  [4] Libre");
+        return;
+    }
+    if (nivel == NIVEL_LIBRE) {
+        if (aBordo) PrepararCartel("MODO LIBRE - INTERIOR DEL VAGON\nObserva a los pasajeros y sus animaciones. [F] vuelve al anden.");
+        else if (plantaAlta) PrepararCartel("MODO LIBRE - PLANTA ALTA\nExplora taquillas, recarga, torniquetes y escaleras. [X] cambia de planta.");
+        else PrepararCartel("MODO LIBRE - ANDENES\n[W A S D] caminar, [1/2/3] camaras, [X] escaleras, [F] vagon.");
+        return;
+    }
+    if (misionCumplida) {
+        PrepararCartel("MISION CUMPLIDA\nEntraste al vagon. Pulsa [F] para salir o [Esc] para terminar.");
+        return;
+    }
+    if (nivel == NIVEL_NOVATO) {
+        if (JuntoAPuerta()) PrepararCartel("NOVATO - ENTRA AL METRO\nPulsa [F] junto a la puerta abierta para subir.");
+        else if (estadoTren == TREN_AUSENTE) PrepararCartel("NOVATO - ENTRA AL METRO\nMuevete con [W A S D], mira con el mouse y usa [Shift] para correr.\nEspera el tren o pulsa [Enter] para llamarlo; acercate a una puerta.");
+        else PrepararCartel("NOVATO - ENTRA AL METRO\nMuevete con [W A S D] y el mouse. Espera a que abra el tren.\nAcercate a una puerta del vagon y pulsa [F] para subir.");
+    } else if (nivel == NIVEL_MEDIO) {
+        if (plantaAlta) PrepararCartel(EscaleraCercana() >= 0 ?
+            "MEDIO - BAJA AL ANDEN\nPulsa [X] para bajar por esta escalera." :
+            "MEDIO - ENTRA AL METRO\nBusca una escalera hacia los andenes. [W A S D] para caminar.");
+        else PrepararCartel(JuntoAPuerta() ? "MEDIO - ENTRA AL METRO\nPulsa [F] para subir al vagon." :
+            "MEDIO - ENTRA AL METRO\nAcercate a una puerta del tren cuando se detenga.");
+    } else {
+        if (!tarjetaRecargada) PrepararCartel(CercaDeRecarga() ?
+            "EXPERTO - RECARGA TU TARJETA Y ENTRA AL METRO\nPulsa [E] en la maquina o taquilla para recargar." :
+            tiempoTotal < avisoBloqueoHasta ?
+            "TORNIQUETE BLOQUEADO\nRecarga la tarjeta en una maquina o taquilla. Pulsa [E] al acercarte." :
+            "EXPERTO - RECARGA TU TARJETA Y ENTRA AL METRO");
+        else PrepararCartel("EXPERTO - ENTRA AL VAGON");
+    }
 }
 
 // ============================================================================
@@ -1647,6 +1804,72 @@ bool CargarPlanta(bool arriba)
     return true;
 }
 
+bool CercaDeRecarga()
+{
+    if (!plantaAlta || modoCamara != CAM_PRIMERA_PERSONA) return false;
+    for (const auto& p : puntosRecarga)
+        if (glm::length(glm::vec2(posJugador.x-p.x, posJugador.z-p.z)) < 3.0f) return true;
+    return false;
+}
+
+void IniciarNivel(int elegido)
+{
+    nivel = elegido;
+    // Si ya estamos en la planta inicial, CargarPlanta no se ejecuta otra vez.
+    pasajeros.AjustarAfluenciaAlta(elegido==NIVEL_EXPERTO,colisionPlantaAlta);
+    pasajeros.AjustarAfluenciaAnden(elegido==NIVEL_EXPERTO,colisionAnden);
+    tarjetaRecargada = false;
+    misionCumplida = false;
+    avisoBloqueoHasta = 0.0f;
+    if (elegido == NIVEL_NOVATO || elegido == NIVEL_LIBRE) {
+        if (plantaAlta && !CargarPlanta(false)) { nivel = -1; return; }
+        alturaPiso = 0.0f;
+        posJugador = glm::vec3(-4.5f, 0.0f, 30.0f);
+        camara.Position = posJugador + glm::vec3(0, ALTURA_OJOS, 0);
+    } else {
+        if (!plantaAlta && !CargarPlanta(true)) { nivel = -1; return; }
+        if (elegido == NIVEL_MEDIO) {
+            ColocarEnEscalera(0);
+            camara.Yaw += 180.0f;
+            camara.ProcessMouseMovement(0, 0);
+        } else {
+            glm::vec3 inicio(-12.0f, 0.019f, 40.0f);
+            glm::vec3 objetivo=inicio;
+            float mejorSeparacion=-1.0f;
+            for (const auto& p : puntosRecarga) {
+                for (float radio : {1.5f, 2.0f, 2.5f, 2.9f}) {
+                    for (int k=0; k<16; ++k) {
+                        float a=k*.392699f;
+                        glm::vec3 q(p.x+radio*std::cos(a),.019f,p.z+radio*std::sin(a));
+                        if (q.x > p.x-0.4f) continue; // frente de la fila de maquinas
+                        if (!colisionPlantaAlta.Libre(q)) continue;
+                        float separacion=100.0f;
+                        for (const auto& persona : pasajeros.arriba)
+                            if (persona.visible) separacion=std::min(separacion,DistanciaXZ(q,persona.pos));
+                        if (separacion>mejorSeparacion) {
+                            inicio=q; objetivo=p; mejorSeparacion=separacion;
+                        }
+                    }
+                }
+                break; // El inicio experto debe quedar frente a las maquinas, no junto al mural de taquilla.
+            }
+            posJugador=inicio;
+            alturaPiso=.019f;
+            camara.Position=posJugador+glm::vec3(0,ALTURA_OJOS,0);
+            if (!puntosRecarga.empty()) {
+                glm::vec3 d=objetivo-posJugador;
+                camara.Yaw=glm::degrees(std::atan2(d.z,d.x));
+                camara.Pitch=0;
+                camara.ProcessMouseMovement(0,0);
+            }
+        }
+    }
+    modoCamara=CAM_PRIMERA_PERSONA;
+    glfwSetInputMode(ventana,GLFW_CURSOR,GLFW_CURSOR_DISABLED);
+    primerMouse=true;
+    ActualizarCartel();
+}
+
 void ColocarEnEscalera(int i)
 {
     const AccesoEscalera& acceso = (plantaAlta ? accesosAlta : accesosAnden)[i];
@@ -1663,6 +1886,7 @@ void ColocarEnEscalera(int i)
 
 int EscaleraCercana()
 {
+    if (nivel == NIVEL_EXPERTO && !tarjetaRecargada) return -1;
     if (modoCamara != CAM_PRIMERA_PERSONA || aBordo || !plantaAltaDisponible || fundidoDireccion != 0) return -1;
     const auto& accesos = plantaAlta ? accesosAlta : accesosAnden;
     for (int i = 0; i < (int)accesos.size(); ++i) {
@@ -1747,7 +1971,12 @@ void EntrarEscenaVagon()
     posJugador=glm::vec3(66.05f,alturaPiso,0);
     camara.Position=posJugador+glm::vec3(0,ALTURA_OJOS,0);
     camara.Yaw=0; camara.Pitch=-4; camara.ProcessMouseMovement(0,0);
-    pasajeros.PrepararVagon(*estacion);
+    pasajeros.PrepararVagon(*estacion, nivel == NIVEL_EXPERTO);
+    if (nivel == NIVEL_EXPERTO) {
+        for (const auto& p : pasajeros.vagon) if (p.accion == AGARRARSE || p.accion == QUIETO)
+            colisionVagon.obstaculos.push_back({p.pos+glm::vec3(-.17f,0,-.13f),
+                                                p.pos+glm::vec3(.17f,1.8f,.13f)});
+    }
     aBordo = true;
     modoCamara = CAM_PRIMERA_PERSONA;
     std::cout << "> Interior del vagon 5: Tren_Completo123.fbx" << std::endl;
@@ -2016,6 +2245,59 @@ bool ProbarPasajeros()
 // ============================================================================
 // BLOQUE 13. Entrada: teclado, mouse y callbacks
 // ============================================================================
+bool ProbarNiveles()
+{
+    IniciarNivel(NIVEL_NOVATO);
+    if (plantaAlta || aBordo || !colisionAnden.Libre(posJugador) || pasajeros.anden.size()>32) return false;
+    IniciarNivel(NIVEL_LIBRE);
+    if (plantaAlta || misionCumplida || pasajeros.anden.size()>32) return false;
+    IniciarNivel(NIVEL_MEDIO);
+    if (!plantaAlta || !colisionPlantaAlta.Libre(posJugador) || EscaleraCercana()<0 || pasajeros.arriba.size()>12) return false;
+    IniciarNivel(NIVEL_EXPERTO);
+    if (!plantaAlta || puntosRecarga.empty() || !colisionPlantaAlta.Libre(posJugador) || !CercaDeRecarga()) return false;
+    if (pasajeros.arriba.size()<24) return false;
+    const auto& t=torniquetesAlta.carriles.front();
+    glm::vec3 frente(t.centro.x,0,t.centro.y-2.0f);
+    for (int i=0;i<60;++i)
+        torniquetesAlta.Actualizar(*estacion,colisionPlantaAlta,frente,1.0f/60.0f,{},tarjetaRecargada);
+    if (t.avance!=0.0f || colisionPlantaAlta.Libre(glm::vec3(t.centro.x,0,t.centro.y))) return false;
+    callbackTecla(ventana,GLFW_KEY_E,0,GLFW_PRESS,0);
+    if (!tarjetaRecargada) return false;
+    for (int i=0;i<60;++i)
+        torniquetesAlta.Actualizar(*estacion,colisionPlantaAlta,frente,1.0f/60.0f,{},tarjetaRecargada);
+    if (t.avance<.99f) return false;
+    if (!CargarPlanta(false)) return false;
+    if (pasajeros.anden.size()<70) return false;
+    EntrarEscenaVagon();
+    if (!aBordo || pasajeros.vagon.size()<20 || colisionVagon.obstaculos.size()<12 ||
+        !colisionVagon.Libre(posJugador)) return false;
+    for (float x=66.05f;x<78.5f;x+=.10f)
+        if (!colisionVagon.Libre(glm::vec3(x,.012f,0))) return false;
+    int agarres=0;
+    for (const auto& p: pasajeros.vagon) if (p.accion==AGARRARSE) {
+        float distanciaTubo=FLT_MAX;
+        for (const auto& n: estacion->nodos) if (n.nombre.compare(0,14,"V05_Pasamanos_")==0 &&
+                                                 n.nombre.find("VIP")==std::string::npos) {
+            bool positivo=(n.aabbMin.z+n.aabbMax.z)>0.0f;
+            float z=positivo?n.aabbMin.z+.115f:n.aabbMax.z-.115f;
+            for (float x : {n.aabbMin.x+.04f,n.aabbMax.x-.04f})
+                distanciaTubo=std::min(distanciaTubo,glm::length(glm::vec2(p.mano.x-x,p.mano.z-z)));
+        }
+        const auto& cuerpo=pasajeros.modelos[p.tipo];
+        glm::mat4 ubicacion=cuerpo.Ubicar(p);
+        auto pose=cuerpo.Pose(p,ubicacion);
+        glm::vec3 manoAnimada=glm::vec3(ubicacion*pose[7]*glm::vec4(cuerpo.juntas[7],1));
+        if (distanciaTubo>.035f || glm::distance(manoAnimada,p.mano)>.035f) return false;
+        ++agarres;
+    }
+    if (agarres<12) return false;
+    for (size_t i=0;i<pasajeros.vagon.size();++i) if (pasajeros.vagon[i].accion==AGARRARSE)
+        for (size_t j=i+1;j<pasajeros.vagon.size();++j) if (pasajeros.vagon[j].accion==AGARRARSE &&
+            DistanciaXZ(pasajeros.vagon[i].pos,pasajeros.vagon[j].pos)<.65f) return false;
+    std::cout << "> Cuatro modos, recarga, bloqueo y hora pico verificados." << std::endl;
+    return true;
+}
+
 void ProcesarEntrada(float dt)
 {
     // El movimiento continuo (WASD, flechas) se lee en los BLOQUES 9 y 11
@@ -2023,7 +2305,8 @@ void ProcesarEntrada(float dt)
 
 void CambiarModoCamara(ModoCamara nuevo)
 {
-    if (fundidoDireccion != 0 || (aBordo && nuevo != CAM_PRIMERA_PERSONA)) return;   // dentro del vagon solo primera persona
+    if (fundidoDireccion != 0 || (nivel != NIVEL_LIBRE && nuevo != CAM_PRIMERA_PERSONA) ||
+        (aBordo && nuevo != CAM_PRIMERA_PERSONA)) return;
     if (modoCamara == CAM_LIBRE && nuevo == CAM_PRIMERA_PERSONA)
         camara.Position = posJugador + glm::vec3(0.0f, ALTURA_OJOS, 0.0f);
     modoCamara = nuevo;
@@ -2034,6 +2317,20 @@ void CambiarModoCamara(ModoCamara nuevo)
 void callbackTecla(GLFWwindow* w, int tecla, int scancode, int accion, int mods)
 {
     if (accion != GLFW_PRESS || (fundidoDireccion != 0 && tecla != GLFW_KEY_ESCAPE)) return;
+    if (tecla == GLFW_KEY_F1 && nivel >= 0) {
+        if (aBordo) SalirEscenaVagon();
+        nivel=-1;
+        if (plantaAlta) CargarPlanta(false);
+        pasajeros.AjustarAfluenciaAlta(false,colisionPlantaAlta);
+        pasajeros.AjustarAfluenciaAnden(false,colisionAnden);
+        ActualizarCartel();
+        return;
+    }
+    if (nivel < 0 && tecla >= GLFW_KEY_1 && tecla <= GLFW_KEY_4) {
+        IniciarNivel(tecla - GLFW_KEY_1);
+        return;
+    }
+    if (nivel < 0 && tecla != GLFW_KEY_ESCAPE) return;
     switch (tecla) {
     case GLFW_KEY_ESCAPE: glfwSetWindowShouldClose(w, true); break;
     // Camaras
@@ -2041,7 +2338,7 @@ void callbackTecla(GLFWwindow* w, int tecla, int scancode, int accion, int mods)
     case GLFW_KEY_2: CambiarModoCamara(CAM_LIBRE); break;
     case GLFW_KEY_3: CambiarModoCamara(CAM_AEREA); break;
     case GLFW_KEY_C:
-        if (!plantaAlta && !aBordo && modoCamara != CAM_CINEMATICA) {
+        if (nivel == NIVEL_LIBRE && !plantaAlta && !aBordo && modoCamara != CAM_CINEMATICA) {
             modoAntesDeCinematica = (modoCamara == CAM_AEREA) ? CAM_PRIMERA_PERSONA : modoCamara;
             CambiarModoCamara(CAM_PRIMERA_PERSONA);
             modoCamara = CAM_CINEMATICA;
@@ -2053,6 +2350,12 @@ void callbackTecla(GLFWwindow* w, int tecla, int scancode, int accion, int mods)
         if (!plantaAlta && estadoTren == TREN_AUSENTE) CambiarEstadoTren(TREN_LLEGANDO);
         break;
     case GLFW_KEY_F: IntentarSubirOBajar(); break;
+    case GLFW_KEY_E:
+        if (nivel == NIVEL_EXPERTO && !tarjetaRecargada && CercaDeRecarga()) {
+            tarjetaRecargada=true;
+            std::cout << "> Tarjeta recargada; torniquetes habilitados." << std::endl;
+        }
+        break;
     case GLFW_KEY_X:
         escaleraPendiente = EscaleraCercana();
         if (escaleraPendiente >= 0) fundidoDireccion = 1;

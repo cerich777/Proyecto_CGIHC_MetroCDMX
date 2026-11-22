@@ -40,6 +40,22 @@ ProyectoMetro_OpenGL/
 2. Elegir **x64** y **Debug** o **Release** (Release va más rápido).
 3. Compilar con **Ctrl + Shift + B** y ejecutar con **F5**.
 
+Al iniciar, elegir **[1] Novato**, **[2] Medio experimentado**,
+**[3] Experimentado** o **[4] Libre**. **F1** permite volver al selector.
+Tambien se puede iniciar directamente con `--nivel 1`, `--nivel 2`,
+`--nivel 3` o `--nivel 4`.
+
+| Modo | Inicio y recorrido |
+|---|---|
+| Novato | Empieza en los andenes. Un tutorial en pantalla explica movimiento, llegada del tren y como subir al vagon. |
+| Medio experimentado | Empieza en planta alta junto a una escalera. Baja al anden y entra al vagon con indicaciones breves. |
+| Experimentado | Empieza frente a las maquinas de recarga. Pulsa **E** cerca de una maquina o taquilla; hasta entonces, los torniquetes y las escaleras permanecen bloqueados para el jugador. Hay mas gente en la planta alta y, sobre todo, en los andenes. Despues entra al vagon, cuya afluencia se conserva. |
+| Libre | Empieza en los andenes, sin mision. Permite explorar las plantas, las camaras, el tren y las animaciones de pasajeros. |
+
+Las misiones muestran carteles contextuales dentro de la ventana y confirman
+su final al entrar al vagon. En modo libre los carteles describen la escena
+sin pedir completar objetivos.
+
 El ejecutable queda en `bin/`. Para abrir la versión ya compilada, ejecuta
 `Ejecutar_Metro.cmd`: inicia el programa desde `bin/`, donde están los shaders,
 modelos y texturas.
@@ -153,12 +169,13 @@ animación o interacción deja de aparecer.
 |---|---|
 | **W A S D** + mouse | Caminar y mirar |
 | **Shift** | Correr (o volar más rápido en cámara libre) |
-| **1** | Cámara en primera persona (con colisiones) |
-| **2** | Cámara libre (**E** sube, **Q** baja) |
-| **3** | Vista aérea isométrica (sin techo, rueda del mouse = zoom) |
-| **C** | Recorrido cinematográfico (para el video) |
+| **1 / 2 / 3** | Al inicio eligen Novato / Medio / Experimentado; durante el modo libre cambian entre primera persona, cámara libre y vista aérea |
+| **4** | Al inicio elige el modo libre |
+| **C** | Recorrido cinematográfico en modo libre |
+| **F1** | Volver al selector de modos |
 | **Enter** | Llamar al tren |
 | **F** | Subir / bajar del vagón (tren detenido, junto a una puerta) |
+| **E** | Recargar la tarjeta en el modo experimentado; en cámara libre, subir |
 | **X** | Subir a planta alta o bajar al andén, cerca de la boca de una escalera en primera persona |
 | **V** | Colocar / retirar los conos del espacio exclusivo |
 | **P** | Encender / apagar las pantallas |
@@ -194,6 +211,15 @@ En planta alta los torniquetes se abren al acercarse al centro de un carril,
 desde cualquiera de los lados. Las hojas giran sobre sus bisagras, permanecen
 abiertas mientras se cruza y se cierran al alejarse. Sus cajas de colisión
 acompañan el giro; los gabinetes y barandales siguen siendo sólidos.
+En el modo experimentado los sensores quedan desactivados para todos hasta
+la recarga; las hojas conservan su colision cerrada y no se puede bajar al
+anden mediante una escalera antes de recargar.
+
+La luz del anden usa un ambiente mas claro y lamparas situadas 0.75 m mas
+arriba, con mayor alcance y menos brillo especular en personajes cercanos.
+Los personajes animados usan una compresion suave de las altas luces para
+conservar detalle en cara y ropa. Las manos de los pasajeros de pie apuntan
+a los ejes reales de los tubos `V05_Pasamanos_*` del modelo del vagon.
 
 El mural y los letreros de andenes y salidas de la planta alta se seleccionan
 con clic izquierdo. Usan los mismos controles de toma, traslado, rotación,
@@ -257,4 +283,7 @@ Opciones de línea de comandos (para pruebas y capturas del reporte):
 `--probar-escaleras` ejecuta las 16 transiciones de subida y bajada;
 `--probar-torniquetes` recorre los 20 carriles en ambos sentidos y las cuatro salidas laterales.
 `--probar-pasajeros` verifica el recorrido de los pasajeros en las tres escenas.
+`--probar-niveles` verifica los cuatro inicios, el bloqueo, la recarga y los
+pasajeros adicionales del vagon.
 Con `--captura`, `--interior-tren` permite tomar una imagen dentro del vagón 5.
+Junto con `--nivel 3`, esa opcion captura la ocupacion de hora pico.
