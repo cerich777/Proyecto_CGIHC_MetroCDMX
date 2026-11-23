@@ -8,5 +8,5 @@ uniform sampler2D textoHUD;
 
 void main()
 {
-    FragColor = usaTextura == 1 ? texture(textoHUD, uv) : color;
+    FragColor = usaTextura == 1 ? texture(textoHUD, uv) * vec4(1.0, 1.0, 1.0, color.a) : color;   // alfa global para fundidos
 }

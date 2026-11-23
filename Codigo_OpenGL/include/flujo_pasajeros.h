@@ -377,12 +377,97 @@ public:
         }
     }
 
+    // Asientos del vagon para la carrera del modo experto
+    struct AsientoVagon { glm::vec3 pos; bool ocupado=false; int corredor=-1; std::string nombre; bool reservado=false; };
+    std::vector<AsientoVagon> asientos;
+    int IndiceAsiento(const std::string& n) const {
+        for (size_t k=0;k<asientos.size();++k) if (asientos[k].nombre==n) return (int)k;
+        return -1;
+    }
+    std::vector<int> colaCorredores;   // orden de salida: primero los que van a los asientos mas cercanos al usuario
+    void IniciarCarrera(float x) {
+        colaCorredores.clear();
+        for (size_t k=0;k<asientos.size();++k) {
+            int c=asientos[k].corredor;
+            if (c>=0 && c<(int)vagon.size() && vagon[c].espera>1e8f && !asientos[k].reservado) colaCorredores.push_back(c);
+        }
+        auto asientoDe=[&](int c){ for (const auto& a:asientos) if (a.corredor==c) return a.pos.x; return 0.0f; };
+        std::sort(colaCorredores.begin(),colaCorredores.end(),[&](int a,int b){ return std::fabs(asientoDe(a)-x)<std::fabs(asientoDe(b)-x); });
+        for (int j=0;j<8 && j<(int)colaCorredores.size();++j) { auto& p=vagon[colaCorredores[j]]; p.espera=.2f*float(j); p.visible=true; }
+        colaCorredores.erase(colaCorredores.begin(),colaCorredores.begin()+std::min<size_t>(8,colaCorredores.size()));
+    }
+    // Ocupa con pasajeros ya sentados los n asientos libres mas cercanos a x (deja al menos uno libre)
+    void SentarCercanos(float x, int n) {
+        std::vector<int> libres;
+        for (size_t k=0;k<asientos.size();++k) if (!asientos[k].ocupado) libres.push_back((int)k);
+        std::sort(libres.begin(),libres.end(),[&](int a,int b){ return std::fabs(asientos[a].pos.x-x)<std::fabs(asientos[b].pos.x-x); });
+        // Trampa: el asiento "pegado a otros" (no apartado) mas cercano queda libre pero es reservado
+        auto pegado=[&](int k) {
+            for (size_t o=0;o<asientos.size();++o)
+                if ((int)o!=k && (asientos[o].pos.z<0)==(asientos[k].pos.z<0) && std::fabs(asientos[o].pos.x-asientos[k].pos.x)<.75f) return true;
+            return false;
+        };
+        for (size_t i=0;i<libres.size();++i) if (pegado(libres[i])) {
+            // el reservado es el de enfrente (lado opuesto del pasillo), que ya trae el letrero en el modelo
+            int k=libres[i], frente=-1; float mejor=1e9f;
+            for (size_t o=0;o<asientos.size();++o)
+                if ((asientos[o].pos.z<0)!=(asientos[k].pos.z<0) && !asientos[o].ocupado) {
+                    float d=std::fabs(asientos[o].pos.x-asientos[k].pos.x);
+                    if (d<mejor) { mejor=d; frente=(int)o; }
+                }
+            if (frente>=0 && mejor<.8f) {
+                auto it=std::find(libres.begin(),libres.end(),frente);
+                if (it!=libres.end()) i=size_t(it-libres.begin());
+            }
+            AsientoVagon& t=asientos[libres[i]];
+            t.reservado=true;
+            if (t.corredor>=0 && t.corredor<(int)vagon.size()) { auto& c=vagon[t.corredor]; c.visible=false; c.directo=false; c.espera=-1; c.camino.clear(); }
+            t.corredor=-1;
+            libres.erase(libres.begin()+i);
+            break;
+        }
+        n=std::min(n,(int)libres.size()-1);
+        for (int i=0;i<n;++i) {
+            AsientoVagon& a=asientos[libres[i]];
+            if (a.corredor>=0 && a.corredor<(int)vagon.size()) {   // su corredor ya no participa
+                auto& c=vagon[a.corredor]; c.visible=false; c.directo=false; c.espera=-1; c.camino.clear();
+            }
+            glm::vec3 pos=a.pos; pos.y=.012f; pos.z=std::copysign(std::abs(pos.z)-.035f,pos.z);
+            Pasajero p=Nuevo(TipoPasajero(i%3),pos,vagon.size());
+            p.accion=SENTARSE; p.giro=pos.z<0?0:glm::pi<float>(); p.alturaAsiento=.37f; p.mezcla=1.0f;
+            vagon.push_back(std::move(p));
+            a.ocupado=true; a.corredor=-1;
+        }
+    }
+    bool SoltarCorredor() {
+        while (!colaCorredores.empty()) {
+            int c=colaCorredores.front(); colaCorredores.erase(colaCorredores.begin());
+            if (c>=0 && c<(int)vagon.size() && vagon[c].espera>1e8f) { vagon[c].espera=0; vagon[c].visible=true; return true; }
+        }
+        return false;
+    }
+    void OcuparAsiento(int k) {   // el usuario gano este asiento: su corredor se queda parado
+        if (k<0 || k>=(int)asientos.size()) return;
+        asientos[k].ocupado=true;
+        int c=asientos[k].corredor;
+        if (c>=0 && c<(int)vagon.size()) { auto& p=vagon[c]; p.directo=false; p.accion=QUIETO; p.camino.clear(); p.espera=0; }
+    }
+
     void PrepararVagon(const ModeloEscena& escena, bool horaPico = false) {
-        vagon.clear();
+        vagon.clear(); asientos.clear();
         if (!Disponible()) return;
+        for (int k=1;k<=48;++k) {
+            char nm[16]; snprintf(nm,sizeof nm,"Asiento_%02d",k);
+            int i=escena.Buscar(nm);
+            if (i<0) continue;
+            AsientoVagon a; a.pos=Centro(escena.nodos[i]); a.nombre=nm;
+            asientos.push_back(a);
+        }
         auto sentar=[&](TipoPasajero tipo,const char* nombre,bool yaSentado) {
             int i=escena.Buscar(nombre);
             if (i<0) return;
+            int k=IndiceAsiento(nombre);
+            if (k>=0) { if (yaSentado) asientos[k].ocupado=true; else asientos[k].corredor=(int)vagon.size(); }
             const Nodo& n=escena.nodos[i];
             auto pos=Centro(n); pos.y=.012f;
             pos.z=std::copysign(std::abs(pos.z)-.035f,pos.z);
@@ -437,22 +522,43 @@ public:
             sentar(ADULTO,"Asiento_30",true);
             agarrarTubo(ADULTO,"V05_Pasamanos_03",false);
             agarrarTubo(MUJER, "V05_Pasamanos_03",true);
+
+            agarrarTubo(ADULTO,"V05_Pasamanos_01",true);
             agarrarTubo(MUJER, "V05_Pasamanos_02",false);
             agarrarTubo(ADULTO,"V05_Pasamanos_02",true);
-            agarrarTubo(ADULTO,"V05_Pasamanos_01",true);
+            agarrarTubo(MUJER, "V05_Pasamanos_04",false);
+            agarrarTubo(ADULTO,"V05_Pasamanos_04",true);
+            agarrarTubo(ADULTO,"V05_Pasamanos_01",false);
+            agarrarTubo(MUJER, "V05_Pasamanos_06",false);
             agarrarTubo(MUJER, "V05_Pasamanos_06",true);
             agarrarTubo(ADULTO,"V05_Pasamanos_05",false);
             agarrarTubo(MUJER, "V05_Pasamanos_05",true);
-            agarrarTubo(MUJER, "V05_Pasamanos_04",false);
-            agarrarTubo(ADULTO,"V05_Pasamanos_04",true);
+
+            // Corredores: van por todos los asientos libres menos dos (los que puede ganar el usuario)
+            int libres=0, j=0;
+            for (const auto& a:asientos) if (!a.ocupado && a.corredor<0) ++libres;
+            for (size_t k=0;k<asientos.size();++k) {
+                if (asientos[k].ocupado || asientos[k].corredor>=0) continue;
+                if (libres-- <= 1) break;   // solo queda un asiento sin corredor asignado
+                std::string nombre=asientos[k].nombre;
+                sentar(TipoPasajero(j%3),nombre.c_str(),false);
+                Pasajero& p=vagon.back();
+                p.pos.x=(j%2?78.9f:65.7f); p.inicio=p.pos;   // entran por los extremos del pasillo
+                p.visible=false;                             // aparecen poco a poco durante la carrera
+                p.rapidez=4.5f; p.espera=1e9f;              // esperan la cuenta regresiva (paso tranquilo)
+                ++j;
+            }
         }
     }
 
     void ActualizarVagon(float dt) {
-        for (auto& p:vagon) {
+        for (size_t idx=0; idx<vagon.size(); ++idx) {
+            auto& p=vagon[idx];
             p.tiempo+=dt; p.pulso*=std::max(0.0f,1-8*dt);
+            if (p.espera>0) { p.espera-=dt; continue; }
             if (p.directo && AvanzarPasajero(p,nullptr,dt)) {
                 p.directo=false; p.accion=SENTARSE; p.tiempo=0;
+                for (auto& a:asientos) if (a.corredor==(int)idx) a.ocupado=true;   // asiento ya no disponible
             }
             if (p.accion==SENTARSE) {
                 MirarPasajero(p,p.pos+glm::vec3(0,0,p.pos.z<0?1:-1),dt);
