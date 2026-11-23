@@ -2099,7 +2099,7 @@ static void DibujarLetreroReservado()
 {
     if (!aBordo || tiempoTotal >= avisoReservadoHasta) return;
     static GLuint tex = 0;
-    const int W = 1000, H = 150;
+    const int W = 1000, H = 190;
     if (!tex) {
         HDC dc = CreateCompatibleDC(nullptr);
         BITMAPINFO info{}; info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
@@ -2114,7 +2114,7 @@ static void DibujarLetreroReservado()
         HGDIOBJ fa = SelectObject(dc, ft);
         TextoCaja(dc, RECT{ 0, 16, W, 72 }, "ASIENTO RESERVADO PARA", DT_SINGLELINE | DT_CENTER);
         SelectObject(dc, fs);
-        TextoCaja(dc, RECT{ 0, 80, W, 130 }, "personas con discapacidad, embarazadas, con bebé en brazos y adultos mayores", DT_SINGLELINE | DT_CENTER);
+        TextoCaja(dc, RECT{ 40, 78, W - 40, H - 10 }, "personas con discapacidad, embarazadas,\ncon bebé en brazos y adultos mayores", DT_CENTER);   // dos renglones para que no se corte
         auto* px = static_cast<unsigned char*>(bits);
         EsquinasRedondeadas(px, W, H, 18, 250);
         glGenTextures(1, &tex); glBindTexture(GL_TEXTURE_2D, tex);
