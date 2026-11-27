@@ -79,8 +79,9 @@ public:
         return referencias;
     }
 
+    // jugadorPuede: el jugador ya paso su tarjeta (o va de salida); si no, su carril no le abre
     void Actualizar(ModeloEscena& escena, MundoColision& mundo, const glm::vec3& jugador, float dt,
-                    const std::vector<glm::vec3>& pasajeros = {}, bool accesoPermitido = true) {
+                    const std::vector<glm::vec3>& pasajeros = {}, bool accesoPermitido = true, bool jugadorPuede = true) {
         for (Torniquete& t : carriles) {
             bool detectado = false;
             float dz = 1000.0f;
@@ -96,7 +97,7 @@ public:
                 }
             };
             if (accesoPermitido) {
-                detectar(jugador);
+                if (jugadorPuede) detectar(jugador);
                 for (const auto& p : pasajeros) detectar(p);
             }
             if (detectado) {

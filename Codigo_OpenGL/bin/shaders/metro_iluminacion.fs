@@ -116,6 +116,11 @@ void main()
         vec4 texel = texture(texture_diffuse1, TexCoords);
         if (texel.a < 0.1) discard;             // recortes (letreros PNG con transparencia)
         base = texel;
+        // Pasajeros: se recolorea la textura (piel / ropa) conservando su sombreado
+        if (usaPiel && any(notEqual(colorDifuso, vec3(1.0)))) {
+            float l = dot(texel.rgb, vec3(0.299, 0.587, 0.114));
+            base.rgb = clamp(colorDifuso * (0.35 + 1.3 * l), 0.0, 1.0);
+        }
     }
 
     // Los graficos del letrero conservan el contraste al pasar bajo una lampara.
