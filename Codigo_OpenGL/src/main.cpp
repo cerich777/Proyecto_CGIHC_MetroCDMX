@@ -218,6 +218,16 @@ static std::string InfoDeLugar(const std::string& n)
         "El Metro es también una galería: en distintas estaciones se exhiben murales y arte.";
     return "";
 }
+// Medio: en las taquillas y en las maquinas hay que recargar (no basta con llegar)
+static bool PasoEsRecarga(bool* enMaquina = nullptr) {
+    if (pasoMedio >= (int)nombresMedio.size()) return false;
+    bool taq = nombresMedio[pasoMedio] == "las taquillas", maq = nombresMedio[pasoMedio] == "las máquinas de recarga";
+    if (enMaquina) *enMaquina = maq;
+    return taq || maq;
+}
+// Torniquetes junto al mural (fila de z = 43.8): paso libre, sin tarjeta ni animacion.
+// La otra fila (z = -37.6, junto a taquillas y maquinas) queda a mas de 3.1 m del punto medio.
+static bool ZonaTorniquetesMural(const glm::vec3& p) { return p.z > 3.1f; }
 static bool PasoEsMapa() { return pasoMedio < (int)nombresMedio.size() && nombresMedio[pasoMedio] == NOMBRE_MAPA; }   // las demas filas avanzan desde que el usuario se forma   // personas: indices en pasajeros.arriba
 std::vector<FilaRecarga> filas; int filaJugador = -1, turnosPasados = 0;
 std::vector<std::pair<int, glm::vec3>> saliendoFila;              // persona y punto donde desaparece
@@ -570,7 +580,7 @@ int main(int argc, char** argv)
         ActualizarCamara(deltaTime);
         // No colarse: se revisa DESPUES de mover al jugador (el movimiento ocurre en ActualizarCamara).
         // Aunque un pasajero abra el torniquete, solo se entra con la animacion de la tarjeta.
-        if (plantaAlta && !aBordo && validaAnim < 0.0f &&
+        if (plantaAlta && !aBordo && validaAnim < 0.0f && !ZonaTorniquetesMural(posJugador) &&
             LadoDeEntrada(posAntes) && !LadoDeEntrada(posJugador)) {
             bool enTorniquete = false;
             for (const auto& t : torniquetesAlta.carriles)
@@ -581,7 +591,7 @@ int main(int argc, char** argv)
                 avisoBloqueoHasta = tiempoTotal + 2.0f;
             }
         }
-        if ((nivel == NIVEL_EXPERTO || nivel == NIVEL_LIBRE) && plantaAlta && (!tarjetaRecargada || saldoTarjeta < 5.0f) && LadoDeEntrada(posJugador))
+        if ((nivel == NIVEL_EXPERTO || nivel == NIVEL_LIBRE) && plantaAlta && (!tarjetaRecargada || saldoTarjeta < 5.0f) && LadoDeEntrada(posJugador) && !ZonaTorniquetesMural(posJugador))
             for (const auto& t : torniquetesAlta.carriles)
                 if (glm::length(glm::vec2(posJugador.x - t.centro.x, posJugador.z - t.centro.y)) < 2.5f)
                     avisoBloqueoHasta = tiempoTotal + 2.0f;
@@ -654,6 +664,13 @@ int main(int argc, char** argv)
         if (recargaAnim >= DURACION_RECARGA) {
             recargaAnim = -1.0f; saldoTarjeta += MONTO_RECARGA;
             tarjetaRecargada = true;
+            bool pideMaquina = false;
+            if (nivel == NIVEL_MEDIO && PasoEsRecarga(&pideMaquina) && pideMaquina == recargaEnMaquina) {
+                ++pasoMedio; rutaRecalculo = 0;
+                char buf[200];
+                snprintf(buf, sizeof buf, "¡RECARGA %d DE 2 LISTA!\nSaldo de tu tarjeta: $%.2f", recargaEnMaquina ? 2 : 1, saldoTarjeta);
+                dialogoTexto = std::string(buf) + (pasoMedio < (int)nombresMedio.size() ? "\nSiguiente: " + nombresMedio[pasoMedio] + "." : std::string());
+            }
         }
         if (enFila && (tiempoFila -= deltaTime) <= 0.0f) {
             enFila = false; IniciarRecarga(); saldoTarjeta = 0.0f;   // llega su turno: recarga con animacion
@@ -661,7 +678,7 @@ int main(int argc, char** argv)
             std::cout << "> Tarjeta recargada; torniquetes habilitados." << std::endl;
         }
         if (nivel == NIVEL_MEDIO && plantaAlta && pasoMedio < (int)puntosMedio.size() &&
-            !PasoEsMapa() && DistanciaXZ(posJugador, puntosMedio[pasoMedio]) < 6.0f) {
+            !PasoEsMapa() && !PasoEsRecarga() && DistanciaXZ(posJugador, puntosMedio[pasoMedio]) < 6.0f) {
             infoLugar = InfoDeLugar(nombresMedio[pasoMedio]);
             ++pasoMedio; rutaRecalculo = 0;
             if (!infoLugar.empty())   // ficha: el usuario lee a su ritmo y continua con [Enter]
@@ -1150,7 +1167,7 @@ void ActualizarAnimaciones(float dt)
     if (plantaAlta) {
         torniquetesAlta.Actualizar(*estacion, colisionPlantaAlta, posJugador, dt,
                                   pasajeros.SensoresAlta(), true,
-                                  validado || (validaAnim >= 0.0f && validaSalida) || !LadoDeEntrada(posJugador));
+                                  validado || (validaAnim >= 0.0f && validaSalida) || !LadoDeEntrada(posJugador) || ZonaTorniquetesMural(posJugador));
         pasajeros.ActualizarAlta(colisionPlantaAlta,dt);
         return;     // los relojes del anden se pausan mientras se recorre arriba
     }
@@ -2815,6 +2832,12 @@ void ActualizarCartel()
             PrepararCartel("MAPA DE LA RED\n12 líneas, cada una con número y color.\nTransbordo: cambias de línea sin pagar.\nCada dirección lleva el nombre de su terminal.\nEstas en Universidad, terminal sur de la\nLinea 3 (verde olivo), rumbo a Indios Verdes.\nLupa: mueve el mouse sobre el mapa.\nRueda del mouse: más o menos aumento.\n[E] cerrar mapa");
         } else if (plantaAlta && PasoEsMapa() && DistanciaXZ(posJugador, puntosMedio[pasoMedio]) < 3.5f) {
             PrepararCartel("MEDIO - MAPA DE LA RED\nEl mapa muestra todas las líneas y estaciones del Metro y de la red de Movilidad\nIntegrada. Sirve para planear tu viaje. Pulsa [E] para verlo en grande.");
+        } else if (bool maq = false; plantaAlta && PasoEsRecarga(&maq) && DistanciaXZ(posJugador, puntosMedio[pasoMedio]) < 6.0f) {
+            if (CercaDeRecarga()) PrepararCartel(maq ?
+                "MEDIO - RECARGA 2 DE 2: MÁQUINA\nPulsa [E] frente a una máquina para recargar tu tarjeta paso a paso." :
+                "MEDIO - RECARGA 1 DE 2: TAQUILLA\nPulsa [E] frente a una ventanilla para recargar tu tarjeta paso a paso.");
+            else PrepararCartel(maq ? "MEDIO - RECARGA 2 DE 2: MÁQUINA\nAcércate a una máquina de recarga." :
+                                      "MEDIO - RECARGA 1 DE 2: TAQUILLA\nAcércate a una ventanilla de la taquilla.");
         } else if (plantaAlta && CercaDeRecarga()) {
             PrepararCartel("MEDIO - RECARGA DE TU TARJETA\nPulsa [E] para ver paso a paso cómo se recarga la tarjeta del Metro.");
         } else if (plantaAlta && !infoLugar.empty() && tiempoTotal < infoHasta) {
@@ -3038,6 +3061,7 @@ static void RevisarValidacion()
     glm::vec3 vista(camara.Front.x, 0, camara.Front.z);
     for (size_t i = 0; i < torniquetesAlta.carriles.size(); ++i) {
         const auto& t = torniquetesAlta.carriles[i];
+        if (ZonaTorniquetesMural(glm::vec3(t.centro.x, 0, t.centro.y))) continue;   // junto al mural: paso libre
         float dx = std::fabs(posJugador.x - t.centro.x), dz = std::fabs(posJugador.z - t.centro.y);
         float sgn = posJugador.z > t.centro.y ? 1.0f : -1.0f;     // lado donde esta el jugador
         glm::vec3 adelante(0, 0, -sgn);
