@@ -107,8 +107,9 @@ public:
         // Pasillos a ambos lados de los torniquetes, sin ocupar sus carriles.
         // Hora pico CDMX: muchos mas pasajeros en los pasillos
         const float carriles[] = {-16.0f,-11.0f,-6.0f,-1.5f,2.5f};
-        const float tramos[] = {-61.0f,-55.0f,-49.0f,-43.0f,-37.0f,-31.0f,
-                                29.0f,35.0f,41.0f,47.0f,53.0f,59.0f};
+        // lejos de las dos filas de torniquetes (z = -37.6 y 43.8) para no abrirlos al pasear
+        const float tramos[] = {-61.0f,-55.0f,-49.0f,-43.0f,-31.0f,-25.0f,
+                                23.0f,29.0f,35.0f,53.0f,59.0f,65.0f};
         for (int carril=0;carril<5;++carril) for (int tramo=0;tramo<12;++tramo) {
             glm::vec3 origen(carriles[carril],.019f,tramos[tramo]+(carril%2?2.0f:0.0f));
             origen=navAlta.Aproximar(origen);

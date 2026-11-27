@@ -119,7 +119,7 @@ void main()
         // Pasajeros: se recolorea la textura (piel / ropa) conservando su sombreado
         if (usaPiel && any(notEqual(colorDifuso, vec3(1.0)))) {
             float l = dot(texel.rgb, vec3(0.299, 0.587, 0.114));
-            base.rgb = clamp(colorDifuso * (0.35 + 1.3 * l), 0.0, 1.0);
+            base.rgb = clamp(colorDifuso * (0.3 + 0.95 * l), 0.0, 1.0);   // sin quemar a blanco
         }
     }
 

@@ -225,6 +225,32 @@ public:
 
     // Las letras de algunos FBX estan pegadas al panel (o dentro de el).
     // Separa los dos juegos de letras hacia sus respectivas caras.
+    // Separa una imagen de la cara del letrero sobre la que esta pegada: cada vertice
+    // se aleja `distancia` metros siguiendo su normal, hacia afuera del centro del
+    // letrero. Evita que de lejos la imagen y el fondo "peleen" (z-fighting).
+    void SepararDeFondo(unsigned int mi, const glm::mat4& modelo, const glm::vec3& centro, float distancia) {
+        Malla& m = mallas[mi];
+        auto& vertices = verticesCpu[mi];
+        const glm::mat4 inv = glm::inverse(modelo);
+        const glm::mat3 normalMundo = glm::transpose(glm::inverse(glm::mat3(modelo)));
+        m.aabbMin = glm::vec3(FLT_MAX);
+        m.aabbMax = glm::vec3(-FLT_MAX);
+        for (VerticeEscena& v : vertices) {
+            glm::vec3 p = glm::vec3(modelo * glm::vec4(v.posicion, 1.0f));
+            glm::vec3 n = normalMundo * v.normal;
+            if (glm::length(n) > 1e-6f) {
+                n = glm::normalize(n);
+                if (glm::dot(n, p - centro) < 0.0f) n = -n;
+                v.posicion = glm::vec3(inv * glm::vec4(p + n * distancia, 1.0f));
+            }
+            m.aabbMin = glm::min(m.aabbMin, v.posicion);
+            m.aabbMax = glm::max(m.aabbMax, v.posicion);
+        }
+        glBindBuffer(GL_ARRAY_BUFFER, m.vbo);
+        glBufferSubData(GL_ARRAY_BUFFER, 0, vertices.size() * sizeof(VerticeEscena), vertices.data());
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+    }
+
     void SepararLetras(unsigned int mi, const glm::mat4& modelo, float centroZ) {
         Malla& m = mallas[mi];
         auto& vertices = verticesCpu[mi];
